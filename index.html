@@ -252,8 +252,8 @@ footer { max-width:1180px; margin:0 auto; padding:6px 24px 40px; color:var(--sub
   -webkit-user-select:none; user-select:none;
 }
 .zoom-inner {
-  transform-origin:top center;
-  transition:transform .05s ease-out;
+  transform-origin:0 0;
+  will-change:transform;
 }
 .zoom-hint {
   position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
@@ -474,27 +474,29 @@ document.addEventListener('keydown', function(e) {
   });
 })();
 
-// ===== 双指缩放 =====
+// ===== 双指缩放（丝滑版） =====
 (function(){
   var wrap = document.getElementById('zoomWrap');
   var inner = document.getElementById('zoomInner');
   var hint = document.getElementById('zoomHint');
   if (!wrap || !inner) return;
 
-  var scale = 1;
-  var minScale = 1;
-  var maxScale = 2.5;
-  var initialDist = 0;
-  var initialScale = 1;
+  var scale = 1, minScale = 1, maxScale = 2.5;
+  var tx = 0, ty = 0;
+  var initialDist = 0, initialScale = 1;
+  var initialTx = 0, initialTy = 0;
+  var centerX = 0, centerY = 0;
   var lastTap = 0;
   var hintTimer = null;
+  var rafId = null;
+  var isPinching = false;
 
   function showHint(text) {
     if (!hint) return;
     hint.textContent = text;
     hint.classList.add('show');
     if (hintTimer) clearTimeout(hintTimer);
-    hintTimer = setTimeout(function(){ hint.classList.remove('show'); }, 1500);
+    hintTimer = setTimeout(function(){ hint.classList.remove('show'); }, 1200);
   }
 
   function getDistance(touches) {
@@ -503,17 +505,55 @@ document.addEventListener('keydown', function(e) {
     return Math.sqrt(dx*dx + dy*dy);
   }
 
+  function getCenter(touches) {
+    return {
+      x: (touches[0].clientX + touches[1].clientX) / 2,
+      y: (touches[0].clientY + touches[1].clientY) / 2
+    };
+  }
+
+  function clampTranslate() {
+    if (scale <= 1) { tx = 0; ty = 0; return; }
+    var wrapRect = wrap.getBoundingClientRect();
+    var innerWidth = wrapRect.width * scale;
+    var innerHeight = wrapRect.height * scale;
+    var maxTx = (innerWidth - wrapRect.width) / 2;
+    var maxTy = (innerHeight - wrapRect.height) / 2;
+    tx = Math.max(-maxTx, Math.min(maxTx, tx));
+    ty = Math.max(-maxTy, Math.min(maxTy, ty));
+  }
+
+  function applyTransform() {
+    inner.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+  }
+
+  function scheduleUpdate() {
+    if (rafId) return;
+    rafId = requestAnimationFrame(function() {
+      rafId = null;
+      applyTransform();
+    });
+  }
+
   wrap.addEventListener('touchstart', function(e){
     if (e.touches.length === 2) {
+      isPinching = true;
       initialDist = getDistance(e.touches);
       initialScale = scale;
+      initialTx = tx;
+      initialTy = ty;
+      var c = getCenter(e.touches);
+      var wrapRect = wrap.getBoundingClientRect();
+      centerX = c.x - wrapRect.left;
+      centerY = c.y - wrapRect.top;
+      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
       e.preventDefault();
     }
     if (e.touches.length === 1) {
       var now = Date.now();
       if (now - lastTap < 300) {
-        scale = 1;
-        inner.style.transform = 'scale(' + scale + ')';
+        scale = 1; tx = 0; ty = 0;
+        applyTransform();
         showHint('已重置为100%');
       }
       lastTap = now;
@@ -521,17 +561,23 @@ document.addEventListener('keydown', function(e) {
   }, {passive:false});
 
   wrap.addEventListener('touchmove', function(e){
-    if (e.touches.length === 2 && initialDist > 0) {
+    if (e.touches.length === 2 && isPinching) {
       var dist = getDistance(e.touches);
       var ratio = dist / initialDist;
-      scale = Math.max(minScale, Math.min(maxScale, initialScale * ratio));
-      inner.style.transform = 'scale(' + scale + ')';
+      var newScale = Math.max(minScale, Math.min(maxScale, initialScale * ratio));
+      var scaleChange = newScale / initialScale;
+      tx = initialTx - (centerX * (scaleChange - 1));
+      ty = initialTy - (centerY * (scaleChange - 1));
+      scale = newScale;
+      clampTranslate();
+      scheduleUpdate();
       e.preventDefault();
     }
   }, {passive:false});
 
   wrap.addEventListener('touchend', function(e){
-    if (e.touches.length < 2) {
+    if (e.touches.length < 2 && isPinching) {
+      isPinching = false;
       initialDist = 0;
       if (scale > 1.01) {
         showHint('缩放 ' + Math.round(scale * 100) + '% · 双击重置');
@@ -542,9 +588,17 @@ document.addEventListener('keydown', function(e) {
   wrap.addEventListener('wheel', function(e){
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      var delta = e.deltaY > 0 ? -0.1 : 0.1;
-      scale = Math.max(minScale, Math.min(maxScale, scale + delta));
-      inner.style.transform = 'scale(' + scale + ')';
+      var wrapRect = wrap.getBoundingClientRect();
+      var mx = e.clientX - wrapRect.left;
+      var my = e.clientY - wrapRect.top;
+      var delta = e.deltaY > 0 ? -0.08 : 0.08;
+      var newScale = Math.max(minScale, Math.min(maxScale, scale + delta));
+      var scaleChange = newScale / scale;
+      tx = tx - (mx * (scaleChange - 1));
+      ty = ty - (my * (scaleChange - 1));
+      scale = newScale;
+      clampTranslate();
+      applyTransform();
       showHint('缩放 ' + Math.round(scale * 100) + '%');
     }
   }, {passive:false});
